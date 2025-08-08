@@ -74,6 +74,23 @@ out_name  = sess.get_outputs()[0].name
 def health():
     return {"status": "ok", "window": WINDOW, "threshold": THRESH}, 200
 
+import requests
+
+def post_anomali(url: str, waktu: str, sensor1: float, status_anomali: str, timeout: int = 10):
+    """
+    Kirim hasil anomali ke endpoint receiver (PHP) via HTTP POST (form-data).
+    """
+    payload = {
+        "waktu": waktu,
+        "sensor1": sensor1,
+        "status_anomali": status_anomali
+    }
+    try:
+        resp = requests.post(url, data=payload, timeout=timeout)
+        return (resp.ok, resp.status_code, resp.text)
+    except requests.RequestException as e:
+        return (False, None, f"Request error: {e}")
+
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
@@ -124,19 +141,34 @@ def predict():
             "anom_final": anom_final.values
         }, index=idx)
 
-        # Ambil baris terakhir (setelah diurutkan), format waktu, dan mapping label
+        # Ambil baris terakhir
         last_df = out.tail(1).reset_index(
             names="timestamp" if isinstance(idx, pd.DatetimeIndex) else "row"
         )
         if "timestamp" in last_df.columns:
             last_df["timestamp"] = pd.to_datetime(last_df["timestamp"], errors="coerce") \
                                         .dt.strftime("%Y-%m-%d %H:%M:%S")
+
         last_df["anom_final"] = last_df["anom_final"].map({True: "anomaly", False: "Normal"})
 
-        # Ambil hanya value anom_final
-        anom_value = last_df["anom_final"].iloc[0]
+        # Data yang dikembalikan ke client
+        result = {
+            "timestamps": last_df["timestamp"].iloc[0],
+            "sensor1": float(last_df["sensor1"].iloc[0]),
+            "anom_final": last_df["anom_final"].iloc[0]
+        }
 
-        return jsonify({"anom_final": anom_value})
+        # === Kirim ke PHP endpoint ===
+        forward_url = "http://bbwsso.monitoring4system.com/datamasuk/tes_anomali"
+        ok, code, text = post_anomali(
+            url=forward_url,
+            waktu=result["timestamps"],
+            sensor1=result["sensor1"],
+            status_anomali=result["anom_final"]
+        )
+        print(f"[FORWARD] ok={ok}, code={code}, resp={text}")
+
+        return jsonify(result)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 400
